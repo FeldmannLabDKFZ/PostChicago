@@ -1,0 +1,566 @@
+---
+title: "PostChicago"
+output: BiocStyle::html_document
+author: "Angelika Feldmann, Samuel Krall, Belinda Blum"
+vignette: >
+  %\VignetteIndexEntry{PostChicago}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r html knit, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+# Introduction
+
+PostChicago is a toolbox for integrating, annotating, visualising and quantifying Capture-(Hi)-C (from now on Capture-C) data derived from the output from the CHiCAGO pipeline ([Chicago package](https://www.bioconductor.org/packages/release/bioc/html/Chicago.html) [1]).\
+The data set used in this vignette and supplied with the package is from a retinoic-acid (RA) mediated embryonic stem cell (ESC) differentiation ([Mahara et al., 2024](https://doi.org/10.1016/j.molcel.2024.10.005) [2], Capture-C Set1).
+
+```{r setup}
+library(PostChicago)
+```
+
+# Workflow
+
+# Setup
+
+## Before you run PostChicago:
+PostChicago relies on pre-processed files. This can be done using tools for Hi-C processing up to filtered paired `BAM` files, such as [HiCUP](https://www.bioinformatics.babraham.ac.uk/projects/hicup/overview/) [3], followed by creating Chicago input (or `.chinput`) files using the CHiCAGO tools script `bam2chicago.sh`.\
+\
+
+Before you use PostChicago, you need the following default directories:\
+    
+  - **dataPath**: Contains chicago input (`.chinput`) files generated from paired `BAM` files by CHiCAGO (`bam2chicago.sh`). Only required in combination with `runChicagoForPostChicago()`
+  - **chicagoOutputDir**: This is where the output of the CHiCAGO pipeline will be stored. These `chicagoData` objects are required for the PostChicago pipeline
+  - **designDir**: Contains the 5 design files required by CHiCAGO and described in the CHiCAGO workflow
+  - **intDir**: Directory containing the intervals of interest, such as ChIP-Seq peaks
+  - **outputDir**: This is where the output of the PostChicago pipeline will be stored
+
+This is the typical directory structure:
+
+```{r Directory structure}
+extdata <- system.file("extdata", package="PostChicago")
+dir(extdata)
+```
+
+Before we run PostChicago, we define the default directories first:
+
+```{r Datapaths for runChicago}
+dataPath <- file.path(extdata, 'dataPath')
+chicagoOutputDir <- file.path(extdata,'results')
+designDir <- file.path(extdata,'designDir')
+intDir <- file.path(extdata,'intervals')
+outputDir <- file.path(extdata,'postchicago')
+
+##checking which .chinput files we have stored:
+dir(dataPath)
+
+##Check if you have already stored the chicagoData tables:
+dir(chicagoOutputDir)
+```
+
+### Run CHiCAGO
+PostChicago contains the function `runChicagoForPostChicago()` to call on CHiCAGO so that the data is created and named to seamlessly fit into our pipeline. However, `chicagoData` objects can also be created and saved using the standard CHiCAGO pipeline. \
+    
+
+* Chicago Settings:\
+\
+    We supply embryonic stem cell (ESC) data before (RA_0h) and after (RA_72h) a 72h of retinoic acid (RA) treatment for diffrerentiation to neuronal precursor cells.\ 
+    For our ESC data, we need to modify the standard Chicago settings slightly. The settings depend on your cell type and restriction enzyme and should corerspond to the settings you used for the design files (See CHiCAGO documentation for more). Note that minFragLen and maxFragLen recommendations vary for each enzyme and refer to CHiCAGO documentation for more.
+
+```{r set Chicago settings}
+weightsPath <- file.path(system.file("extdata", package="Chicago"),"weights")
+weightSettings <- file.path(weightsPath, "mESC-2reps.settings")
+weightSettings=read.delim(weightSettings,header=FALSE)
+
+mySettings <- Chicago::defaultSettings()
+mySettings[grep('weight',names(mySettings))] <- weightSettings[,2]
+mySettings$minFragLen=100
+```
+
+* Data frame \
+    A typical Capture-C experiment consists of several samples and at least two replicates per sample. For full functionality of PostChicago, we advise to run the Chicago pipeline on samples as well as on the individual replicates. We define the sample information in the small data.frame `df`. This table should contain at least two columns: **filename** contains the file names, **type** contains the sample name. All lines with the same sample name will be treated as replicates.\
+    \
+    Below an example of how we usually construct `df`:
+
+
+```{r data frame for runChicago}
+fls=list.files(dataPath)
+fls
+
+df = data.frame(filename=fls, 
+                RA = sapply(strsplit(fls,split='_rep'),FUN=function(x) x[1]),
+                rep=strsplit_string(fls,s1='h_',s2='.chinput'))
+df$type = df$RA
+
+df
+```
+
+Now you can run Chicago! \
+\
+Note that for PostChicago we require more than the standard output of the Chicago pipeline. Instead, we save the entire `chicagoData` objects, containing reads and scores for all pairwise interactions, similar to `bedgraph` files. We will require this information for plotting and quantification of interaction strengths for all samples. In contrast, standard Chicago output (`.ibed` files) only saves this information for significant interactions.\
+The output will be saved in `chicagoOutputDir`. The conventional naming of the `chicagoData` objects is `cd_<mysamplename>`. They can later be loaded manually using `load(<myChicagoDataObject>)` and accessed via `cd`. 
+
+```{r Run Chicago, results='hide', message=FALSE, warning=FALSE}
+runChicagoForPostChicago(df = df, mySettings=mySettings, outputDir=chicagoOutputDir,
+           DataPath =dataPath, DesignDir=designDir)
+```
+
+Running it now on individual replicates. This is recommended for the downstream analysis.
+```{r Run Chicago on reps, echo=TRUE, results='hide', message=FALSE, warning=FALSE}
+df$type = as.character(paste(df$RA,df$rep,sep='_'))
+
+df
+
+runChicagoForPostChicago(df = df, mySettings=mySettings, outputDir=chicagoOutputDir,
+           DataPath=dataPath, DesignDir=designDir)
+```
+
+### Read in the datasets
+Regardless of whether the `chicagoData` objects have been created via `runChicagoForPostChicago()` or via CHiCAGO (or you are using this infrastructure for entirely different data), they will now be loaded into a list. \
+
+For this, PostChicago requires two additional objects: 
+
+- `baited_genes` is a `GenomicRanges` object that annotates view points and is created from the `.baitmap` (one of the CHiCAGO design files stored in the `designDir`), which allows to easily iterate through the data and add meaningful names to the plots. This object has two mandatory columns: 1) `re_id` containing the restriction fragment IDs that correspond to the view points (baits) and `.rmap`; 2) `genename`: name of the bait
+- `rmapgr` is a `GenomicRanges` object annotating all restriction fragments and is created from the `.rmap` (one of CHiCAGO design files stored in the `designDir`). The only mandatory column is `id`, containing the ID of the restriction fragment.
+
+To generate `baited_genes` and `rmapgr` objects from design files, we can use the helper functions `baitmap2baited_genes()` and `rmap2rmapgr()`:
+
+```{r read baited_genes and rmapgr, warning=FALSE}
+baited_genes=baitmap2baited_genes(designDir,save=FALSE)
+rmapgr=rmap2rmapgr(designDir,save=FALSE)
+```
+
+Now we are ready to read in the `chicagoData` tables created by `runChicagoForPostChicago()` into a list using the function `loadCdList()`:
+
+```{r Read chicagoData}
+dir(chicagoOutputDir)
+cdlist <- loadCdList(resultsDir = chicagoOutputDir, baited_genes = baited_genes)
+names(cdlist)
+cdlist[[1]]
+```
+
+For downstream analysis, we extract the list `L` containing all intergated data and `LL` containing data from individual replicates:
+
+```{r Extract L and LL}
+L <- cdlist[-grep('rep',names(cdlist))]
+LL <- cdlist[grep('rep',names(cdlist))]
+rm(cdlist)
+```
+
+These steps can also easily be done manually without these helper functions, as long as the input files are organised as such.\
+\
+
+# Basic statistics:
+
+To assess the quality of the data and individual replicates, PostChicago provides the function `plotSigIntsStats()`. In addition to quantification provided in barplots below, it can plots the various read distributions across baits. We will omit this step here using the argument `plotDistribution=FALSE`, since our test dataset only contains one gene. It is important to look for inconsistencies that cannot be explained by biology, for instance a sample with a much larger total read number, but a much smaller number of significant interactions. We also find that samples with a high background have a shift in read counts within significant interactions towards a higher read count.
+
+```{r plotSigIntsStats, fig.width=7, fig.height=7,warning=FALSE}
+plotSigIntsStats(L,plotDistribution=FALSE,plotExamples=TRUE)
+```
+
+# Visualisation
+
+The main function for data visualisation is `plotInteractions()`.\
+This function uses the `chicagoData` objects saved by `runChicagoForPostchicago()` and loaded into `L` (samples) or `LL` (replicates) to generate normalised line plots over the genomic location around a view point (bait). 
+
+## Lineplots
+
+`plotInteractions()` iterates through the list of `chicagoData` tables in `L` or `LL` and plots a running mean read coverage across `k` adjacent fragments surrounding the view point as specified by `id`. The reads are normalized to the total number of reads mapped to baits per 100,000 reads and further to the total number of baits in each capture experiment, which enables a comparison of interactions between different captures. In the plots, the bait position is indicated by the grey triangle. In addition to `k`, we can specify the distance plotted around a bait using the `zoom` argument. By default, the plot title contains the `baitID`, `zoom` and `k`, however we can add a more descriptive name, such as the of the view point, using the argument `name`.\ 
+\
+The default function creates line plots with bait+/- 200kb:
+```{r plot Interactions simple, fig.width=5, fig.height=4}
+col=c('indianred1','seagreen')
+name='Hoxb3'
+id=baited_genes[baited_genes$genename==name]$re_id
+k=15
+ylim=c(0,200)
+plotInteractions(L,id,k,ylim=ylim,show.legend = TRUE,name=name,
+                 rmapgr=rmapgr,col=col)
+```
+
+The plot above shows a clear difference between the samples with RA_72h strongly losing the interaction on the left. 
+To assess reproducibility, we can now make the plots for individual replicates, stored in the object `LL`. For this, we can keep the sample colours, but redefine the line types using the `lty` option. We can also change the plotted area via `zoom`. For a larger `zoom`, `k` should be adjusted to allow for smooth display of the data:
+
+```{r plot Interactions replicates, fig.width=5, fig.height=4}
+colreps=rep(col, each=2)
+lty=rep(1:2,2)
+zoom=500000
+k=31
+plotInteractions(LL,id,k,ylim=ylim,show.legend = TRUE,name=name,
+                 rmapgr=rmapgr,col=colreps,lty=lty)
+```
+
+In addition to changing the `zoom`, which plots the data symmetrically around the bait, we can specify the exact genomic region using `xlim`, which overrides any `zoom` settings. Additionally, the legend can be plotted outside of the plot using the `show.legend.outside` option:
+
+```{r plot Interactions legend outside, fig.width=8, fig.height=4}
+par(mfrow=c(1,2))
+xlim=c(96150000,96350000)
+zoom=as.numeric(NA)
+plotInteractions(L,id,zoom=zoom,k=k,ylim=ylim,show.legend = FALSE,name=name,
+                 rmapgr=rmapgr,col=col, show.legend.outside=TRUE,xlim=xlim)
+```
+
+### Annotation of Line plots with intervals:
+
+Annotation with intervals, such as ChIP-Seq peaks, is generally done from a `GenomicRangesList` object. This can be done manually. For ease of use, PostChicago offers the function `loadGrl()` that automatically constructs the list from either `.rds` or `.bed` files that are supplied in the `intDir`. Let's load our intervals into a `GenomicRangesList` object `grl`: 
+
+```{r read in annotation intervals, warning=FALSE}
+dir(intDir)
+grl <- suppressWarnings(loadGrl(intDir = intDir))
+```
+
+Intervals in the `grl` can then be added to the line plots using the `intervals` argument:
+
+```{r plot Interactions with Intervals, fig.width=8,fig.height=4}
+colintervals=c('cornflowerblue','darkblue')
+
+zoom=1000000
+
+par(mfrow=c(1,2))
+plotInteractions(L,id,k,zoom=zoom,ylim=ylim,show.legend = FALSE,show.legend.intervals=FALSE,name=name,
+                  intervals=grl,colintervals=colintervals, rmapgr=rmapgr,col=col,show.legend.outside=TRUE)
+```
+
+
+## Creating Genome Browser tracks: 
+
+Lineplots represent static snap shots. For a more flexible data browsing, PostChicago provides the function `makeBedGraphs()`. Per default, this function creates two types of files for an `id` (= bait): i) `bedgraphs` of normalized interactions for each sample using the same normalisation as for the Lineplots; ii) a `bed` file containing the bait. Unless specified otherwise, using the argument `outputDir`, all files are stored in the default directory called `bedgraphs`. 
+
+```{r Create Bedgraphs, message=FALSE, results='hide'}
+# ##extract all baitIDs:
+# ids=unique(unlist(lapply(L,FUN=function(x) unique(x$baitID))))
+
+# ##create bedgraphs for selected:
+# for (id in ids){
+#   print(id)
+#   getBedGraphsNormGetbednorm(id,L,rmapgr,baited_genes=baited_genes,outputDir = paste0(outputDir,'/bedgraphs'))    
+# }
+```
+
+
+# Data integration
+
+## Create interactions table
+To integrate data from multiple samples, we can create an interactions table containing all information about any significant interaction in one experiment using the `makeIntsTable()` function. We first extract all significant interactions across samples, annotate them with raw and pooled weighted average read counts. The reads are then normalized (downsampled) based on the total number of reads mapped to baits across samples (library size). While providing replicate data is optional, for completeness of the analysis we recommend to include data from both pooled samples and replicates, i.e. both `L` and `LL`. The function automatically creates pairwise interaction plots and saves them. Each interaction receives a unique `intID`, which is `baitID;otherEndID`. Since the creation of this table is quite resource-intensive, it is processed in chunks using `ngroups`. For efficient computing time, each group should contain ~50-150 baits. In this experiment, we are processing 220 baits, so we can use 4 groups of 65 points each.\
+Once saved, the interaction table can be called like any other table in the `.txt` format.
+```{r Create Ints file, message=FALSE}
+ints=makeIntsTable(L,baited_genes,repscores=TRUE,LL=LL,
+                    ngroups = 4, outfolder = outputDir)
+```
+
+Next, we annotate our interactions table with the intervals in `grl` using the `annotateInts()` function. The default requires intervals to have a direkt overlap with the otherEnds. This can be changed to being within x bp using the `maxgp` argument, that works similarly to `maxgap` in `findOverlaps()`. 
+
+```{r annotateInts, warning=FALSE}
+ints=annotateInts(ints=ints,grl=grl)
+```
+
+As quality control of our data, we can use `makeQCplot()` to plot the correlation of scores and read counts of separate replicates as a regional heatmap, looking at both downsampled and unnormalized data.
+
+```{r message=FALSE}
+makeQCplot(ints, outputDir, plot = TRUE)
+```
+
+## Visualize significant interactions using Lineplots
+
+Significant interactions within the interactions table can be supplied to the `plotInteractions()` function using the argument `d` and visualized as vertical bars:
+
+```{r line plots with interactions, fig.width=8, fig.height=4}
+name='Hoxb3'
+id=baited_genes[baited_genes$genename==name]$re_id
+k=31
+zoom=500000
+ylim=c(0,100)
+
+par(mfrow=c(1,2))
+plotInteractions(L,id,k,zoom,ylim=ylim,show.legend = FALSE,show.legend.intervals=FALSE,name=name,
+                  intervals=grl,colintervals=colintervals, rmapgr=rmapgr,col=col,show.legend.outside=TRUE, d=ints)
+```
+
+The function can visualize up to 8 different interaction types using different colors, provided they are annotated in the column called `clusters_refined`. Below an example of how to annotate the interactions table and how to plot these interactions.
+
+```{r line plots with interaction types, fig.width=8, fig.height=4}
+##select interactions detected only at 0h, these are 'lost'
+lost=ints[ints$RA_0h_score>=5 & ints$RA_72h_score<3,]$intID
+
+##select interactions detected only at 72h, these are 'gained'
+gained=ints[ints$RA_0h_score<3 & ints$RA_72h_score>=5,]$intID
+
+##annotate the interaction table with interaction types:
+ints$clusters_refined='both'
+ints[ints$intID %in% lost,]$clusters_refined='RA_0h'
+ints[ints$intID %in% gained,]$clusters_refined='RA_72h'
+
+par(mfrow=c(1,2))
+plotInteractions(L,id,k,zoom,ylim=ylim,show.legend = FALSE,show.legend.intervals=FALSE,name=name,
+                  intervals=grl,colintervals=colintervals, rmapgr=rmapgr,col=col,show.legend.outside=TRUE, d=ints)
+```
+
+
+
+# Quantification
+
+## Quantification within intervals of interest
+
+So far, we have only compared interactions at the restriction fragment level. However, often we are more interested in interactions with specific intervals, such as ChIP-Seq peaks or gene promoters interactions with which can overlap more than one restriction fragment. To achieve this, we first need to convert our gene-to-fragment interactions into gene-to-peak interactions. 
+
+### Making oneGeneOnePeak tables
+
+The first step is to create `oneGeneOnePeak` tables using the function `makeOneGeneOnePeak()`. Interactions with large intervals, such as ChIP-Seq peaks, can have multiple fragment-level interactions. In contrast, interval interactions within `oneGeneOnePeak` tables assign only one interaction per specific interval per gene. These interaction tables are automatically saved in the directory defined in the argument `folder`.
+
+```{r makeOneGeneOnePeak, warning=FALSE, fig.width=8, fig.height=6}
+quantfolder=paste0(outputDir,'/oneGeneOnePeak')
+makeOneGeneOnePeak(grl = grl,rmapgr = rmapgr, ints = ints, folder = quantfolder, maxgap=1000)
+list.files(path=quantfolder,pattern='oneGeneOnePeak')
+```
+
+**Examples:**
+
+We can visualize `oneGeneOnePeak` interactions with `plotInteractions()` by supplying `oneGeneOnePeak` tables instead of the original interactions table via the argument `d`:
+
+```{r examples oneGeneOnePeak, fig.width=8, fig.height=4}
+fls_ogop=list.files(path=quantfolder,pattern='oneGeneOnePeak')
+
+##Load oneGeneOnePeak file for H3K27me3 peaks:
+ogop_K27me3=read.delim(paste(quantfolder,fls_ogop[grep('K27me3',fls_ogop)],sep='/'),stringsAsFactors = FALSE)
+ogop_K27me3$clusters_refined='K27me3 interaction'
+
+##Load oneGeneOnePeak file for H3K27ac peaks:
+ogop_K27ac=read.delim(paste(quantfolder,fls_ogop[grep('K27ac',fls_ogop)],sep='/'),stringsAsFactors = FALSE)
+ogop_K27ac$clusters_refined='K27ac interaction'
+
+par(mfrow=c(1,3))
+
+##all interactions:
+plotInteractions(L,id,k,ylim=ylim,show.legend = TRUE,name=paste('fragment-level ints \n',sep=','),
+                 colintervals=colintervals,intervals=grl, rmapgr=rmapgr,col=col,d=ints)
+
+##K27me3-overlapping interactions
+plotInteractions(L,id,k,ylim=ylim,show.legend = TRUE,name=paste('K27me3 interactions \n',sep=','),
+                 intervals=grl, rmapgr=rmapgr,col=col,colintervals=colintervals,d=ogop_K27me3)
+
+##K27ac-overlapping interactions
+plotInteractions(L,id,k,ylim=ylim,show.legend = TRUE,name=paste('K27ac interactions \n',sep=','),
+                 intervals=grl, colintervals=colintervals,rmapgr=rmapgr,col=col,d=ogop_K27ac)
+```
+
+### Matrices surrounding intervals of interest
+
+Now that we have our oneGeneOnePeak files, we will quantify reads and scores under Hoxb3 promoter-interacting H3K27ac peaks.\ 
+To do this, we will first create interaction matrices centered at restriction fragment overlapping the center of interacting ranges using the function `getMatrix()`. The distance from center in restriction fragments is given via the argument `zoom`. The default function creates `Lm`, a list of matrices based on the supplied list of `chicagoData` objects. This list contains matrices with ranges overlaps across all samples and distance-matched control matrices. The matrices are flipped in a way that the promoter is always to the right of the interaction. `Lm` is saved within the `resfolder` and can be loaded into an object called `Lm`.\
+\
+As an example, we will now create such matrices for H3K27ac peaks. 
+
+
+```{r Save one Gene one Peak, message=FALSE, warning=FALSE}
+name=names(grl)[grep('K27ac',names(grl))]
+name
+
+##Zoom defines the +/- distance (in restriction fragments) around the intervals 
+##for which the matrices will be created
+zoom=100
+
+##Folder in which the matrices will be stored:
+resfolder=paste0(outputDir,'/matrices/')
+if(!file.exists(resfolder)){dir.create(resfolder)}
+
+##un-normalized matrix with reads
+m_reads=getMatrix(L,zoom=zoom,d=ogop_K27ac,resfolder=resfolder,type='reads',norm=FALSE,
+               name=name,rmapgr=rmapgr)
+
+##matrix normalized to the center of interactions in sample 1 (as defined per normsam) with reads
+m_reads_norm=getMatrix(L,zoom=zoom,d=ogop_K27ac,resfolder=resfolder,type='reads',norm=TRUE,
+               name=name,rmapgr=rmapgr, normsam=1)
+
+##matrix normalized to the center of interactions in sample 2 (as defined per normsam) with reads
+m_reads_norm2=getMatrix(L,zoom=zoom,d=ogop_K27ac,resfolder=resfolder,type='reads',norm=TRUE,
+               name=name,rmapgr=rmapgr, normsam=2)
+
+##un-normalized matrix with scores
+m_scores=getMatrix(L,zoom=zoom,d=ogop_K27ac,resfolder=resfolder,type='scores',norm=FALSE,
+               name=name,rmapgr=rmapgr)
+
+##matrix normalized to the center of interactions in sample 1 (as defined per normsam) with scores
+m_scores_norm=getMatrix(L,zoom=zoom,d=ogop_K27ac,resfolder=resfolder,type='scores',norm=TRUE,
+               name=name,rmapgr=rmapgr, normsam=1)
+
+##matrix normalized to the center of interactions in sample 2 (as defined per normsam) with scores
+m_scores_norm2=getMatrix(L,zoom=zoom,d=ogop_K27ac,resfolder=resfolder,type='scores',norm=TRUE,
+               name=name,rmapgr=rmapgr, normsam=2)
+```
+
+
+### Plotting aggregate profiles of interactions
+Now we can use the lists of matrices to plot aggregate profiles of different interaction types using the `plotAggregatePeaks()` function. We are plotting aggregate read counts over all interactions. Then we will plot normalised read counts to one of the samples, which makes individual interactions more comparable. Finally, we will also plot scores.
+
+```{r Plot aggregate profiles, message=FALSE, warning=FALSE, fig.width=8, fig.height=6}
+colaggr = rep(col,2)
+lty = rep(c(1,3),each=2)
+
+par(mfrow=c(2,3))
+plotAggregatePeaks(m_reads,plotwhat='median',k=3,xlim=c(-50,50),mainprefix= 'K27ac\n', ylab='reads', col=colaggr, lty=lty)
+plotAggregatePeaks(m_reads_norm,plotwhat='median',k=3,xlim=c(-50,50),mainprefix= 'K27ac norm to 0h\n', ylab='reads_norm', col=colaggr, lty=lty)
+plotAggregatePeaks(m_reads_norm2,plotwhat='median',k=3,xlim=c(-50,50),mainprefix= 'K27ac norm to 72h\n', ylab='reads_norm', col=colaggr, lty=lty)
+plotAggregatePeaks(m_scores,plotwhat='median',k=3,xlim=c(-50,50),mainprefix= 'K27ac scores\n',ylab='scores', col=colaggr, lty=lty)
+plotAggregatePeaks(m_scores_norm,plotwhat='median',k=3,xlim=c(-50,50),mainprefix= 'K27ac scores norm to 0h\n',ylab='scores_norm', col=colaggr, lty=lty)
+plotAggregatePeaks(m_scores_norm2,plotwhat='median',k=3,xlim=c(-50,50),mainprefix= 'K27ac scores norm to 72h\n',ylab='scores_norm', col=colaggr, lty=lty)
+```
+
+The above plots show that Hoxb3 interactions with H3K27ac go up upon differentiation. subtle differences depending on the sample to which the data are normalised. For sanity check, we recommend to test out normalisation to different samples. Also, to avoid inflation of fold changes, a general recommendation is to use the positive control sample as reference.\
+\
+Let's compare Hoxb3 interactions with H3K27ac peaks with its H3K27me3 peak interactions:
+```{r Plot aggregate profiles comparison, message=FALSE, warning=FALSE, fig.width=7, fig.height=4}
+
+name=names(grl)[grep('K27me3',names(grl))]
+name
+
+##matrix normalized to the center of interactions in sample 2 (as defined per normsam) with reads
+m_reads_norm2_K27me3=getMatrix(L,zoom=zoom,d=ogop_K27me3,resfolder=resfolder,type='reads',norm=TRUE,
+               name=name,rmapgr=rmapgr, normsam=2)
+
+#Plots:
+
+colaggr = rep(col,2)
+lty = rep(c(1,3),each=2)
+
+par(mfrow=c(1,2))
+plotAggregatePeaks(m_reads_norm2,plotwhat='median',k=3,xlim=c(-50,50),mainprefix= 'K27ac norm to 72h\n', ylab='reads_norm', col=colaggr, lty=lty)
+plotAggregatePeaks(m_reads_norm2_K27me3,plotwhat='median',k=3,xlim=c(-50,50),mainprefix= 'K27me3 norm to 72h\n', ylab='reads_norm', col=colaggr, lty=lty)
+```
+
+This comparison shows that while the Hoxb3 promoter gains interactions with H3K27ac peaks, it loses interactions with H3K27me3 peaks, consistent with 
+the line plots.
+\
+`getMatrix()` can use two types of read normalisation: downsampling (default) and scaling. In both cases the reads are normalised to the read coverage, but in case of scaling, the reads are scaled by the total number of promoters in the Capture experiment upon downsampling to a default library size of 100,000. This is meant to enable comparison between different capture experiments and works in the same way as read normalization in `plotInteractions()`. On the other hand, in case of downsampling, the reads are simply downsampled to the smallest library in `L`.\
+\
+Below is a comparison of the two read normalisation methods:
+
+```{r Plot aggregate profiles different read normalization, message=FALSE, warning=FALSE, fig.width=7, fig.height=4}
+##matrix with scaling reads:
+m_reads_scaling=getMatrix(L,zoom,ogop_K27ac,resfolder=resfolder,type='reads',norm=FALSE,
+               name=name,rmapgr=rmapgr,readnorm = 'scaling')
+
+##plots:
+par(mfrow=c(1,2))
+plotAggregatePeaks(m_reads,plotwhat='median',k=3,xlim=c(-50,50),mainprefix= 'K27ac downsampled\n', ylab='reads', col=colaggr, lty=lty)
+plotAggregatePeaks(m_reads_scaling,plotwhat='median',k=3,xlim=c(-50,50),mainprefix= 'K27ac scaled\n', ylab='reads', col=colaggr, lty=lty)
+```
+
+### Quantify reads in epigenetic peak interactions
+
+Finally, we want to quantify reads within each gene-interval interaction. `getDataInPeaks()` quantifies the sum of reads/scores at the central restriction fragment, as sum within all fragments covering an interval, or their mean. These are automatically saved in a table with the extension '...readsScoresInPeak.txt'. The function creates a list with `readsScoresInPeak` tables for each of the ranges within the supplied `grl`. In our case we only create the table for H3K27ac peaks:
+```{r Quantify, warning=FALSE, message=FALSE, results='hide'}
+dip=getDataInPeaks(grl[grep('K27ac',names(grl))],resfolder=resfolder, infolder = quantfolder, overwrite=FALSE, zoom = zoom)
+```
+
+Let's now plot our quantification as boxplots using the function `boxplotsCC()`:
+
+```{r boxplotsCC, warning=FALSE,message=FALSE, fig.width=7, fig.height=6}
+boxplotsCC(grl[grep('K27ac',names(grl))],resfolder=resfolder, infolder=quantfolder, col=rep(col,2))
+```
+
+We can also supply a custom list of tables to plot, for instance only interactions that are significantly gained:
+
+```{r boxplotsCC_custom lost ints, warning=FALSE,message=FALSE, fig.width=7, fig.height=6}
+gained=ints[ints$RA_72h_score>=5 & ints$RA_0h_score <5,]$intID
+interactionlist=lapply(dip, FUN=function(x) x[x$intID %in% gained,])
+names(interactionlist)=paste0(names(interactionlist),'_gained.ints')
+boxplotsCC(grl[grep('K27ac',names(grl))],resfolder=resfolder, infolder=outputDir, l=interactionlist, col=rep(col,2))
+```
+
+
+## Quantification in interaction peaks
+
+Visualizing interactions, for instance in line plots, quickly reveals that one strong interaction peak can actually be represented by multiple disjointed interactions. These interactions can be merged using the `aggregatePeaks()` function of PostChicago. This function takes a table of interactions and merges all otherEnds interacting with one bait that are within a distance of `dis` restriction fragments of each other.\
+If we would like to define **sample-specific interaction peaks**, the supplied table should contain only these sample-specific interactions.\
+\
+Below is a comparison of fragment-level interactions with interactions aggregated over 5 restriction sites:
+
+```{r aggregatePeaks, fig.width=7, fig.height=7}
+ints$clusters_refined='interaction'
+
+##Distance in restriction fragments over which to aggregate:
+dis=5
+
+##Let's aggregate all interactions within 5 fragments distance of each other:
+aggregated5=aggregatePeaks(ints,dis,names(L),fileprefix = paste0(outputDir,'/ints'))
+
+##Let's aggregate all interactions within 5 fragments distance of each other
+##that are significant at 0h:
+aggregated5_0h=aggregatePeaks(ints[ints$RA_0h_score>=5,],dis,names(L),fileprefix = paste0(outputDir,'/ints_RA0h'))
+
+##Let's aggregate all interactions within 5 fragments distance of each other
+##that are significant at 72h:
+aggregated5_72h=aggregatePeaks(ints[ints$RA_72h_score>=5,],dis,names(L),fileprefix = paste0(outputDir,'/ints_RA72h'))
+
+nrow(ints)
+nrow(aggregated5)
+
+##Example plots:
+col=c('indianred1','seagreen')
+name='Hoxb3'
+id=baited_genes[baited_genes$genename==name]$re_id
+k=11
+ylim=c(0,200)
+xlim=c(96150000,96350000)
+zoom=as.numeric(NA)
+
+par(mfrow=c(2,2))
+
+plotInteractions(L,id,k,zoom,ylim=ylim,show.legend = TRUE,name=paste('Fragment-level ints \n', name, sep=''),
+                 rmapgr=rmapgr,col=col,d=ints,xlim=xlim)
+
+plotInteractions(L,id,k,zoom,ylim=ylim,show.legend = TRUE,name=paste('Aggregated ints, dis = ',dis, ' frags \n', name, sep=''),
+                 rmapgr=rmapgr,col=col,d=aggregated5,xlim=xlim)
+
+plotInteractions(L,id,k,zoom,ylim=ylim,show.legend = TRUE,name=paste('Aggregated RA_0h ints, dis = ',dis, ' frags \n', name, sep=''),
+                 rmapgr=rmapgr,col=col,d=aggregated5_0h,xlim=xlim)
+
+plotInteractions(L,id,k,zoom,ylim=ylim,show.legend = TRUE,name=paste('Aggregated RA_72h ints, dis = ',dis, ' frags \n', name, sep=''),
+                 rmapgr=rmapgr,col=col,d=aggregated5_72h,xlim=xlim)
+```
+
+This visualization nicely confirms that, as suspected from the interaction profiles, the majority of 
+interactions in this region are specific for RA_0h.\
+\
+Apart from fragment-level aggregation, PostChicago provides the function `aggregatePeaks_regions()`, which aggregates significant interactions based on the distance in bp. Below an example on how peak aggregation works over a 10kb distance.
+
+```{r aggregatePeaks_regions, fig.width=8, fig.height=4}
+##Distance in bp over which to aggregate:
+disbp=10000
+
+##Let's aggregate all interactions within 5 fragments distance of each other:
+aggregated10kb=aggregatePeaks_regions(ints,disbp,names(L),fileprefix = paste0(outputDir,'/ints'))
+nrow(aggregated10kb)
+
+##plot:
+par(mfrow=c(1,2))
+plotInteractions(L,id,k,zoom,ylim=ylim,show.legend = TRUE,name=paste('Aggregated ints, dis = ',dis, ' frags \n', name, sep=''),
+                 rmapgr=rmapgr,col=col,d=aggregated5,xlim=xlim)
+plotInteractions(L,id,k,zoom,ylim=ylim,show.legend = TRUE,name=paste('Aggregated ints, dis = ',disbp/1000, 'kb \n', name, sep=''),
+                 rmapgr=rmapgr,col=col,d=aggregated10kb,xlim=xlim)
+```
+
+These examples reveal that while an aggregation over 10kb nicely highlights the two interaction peaks at the lost interaction on the left,
+the interactions more proximally to the view point lose their granularity with such harsh aggregation. As with peak calling for ChIP-Seq, we recommend testing out different 
+aggregation types and distances for each new Capture experiment.
+\
+Interaction peaks can now be used to create new grl objects for oneGeneOnePeak-level analysis analogous to the analysis for epigenetic ranges.
+
+
+# Session Info
+```{r}
+sessionInfo()
+```
+
+# References
+
+1. Cairns, J., Freire-Pritchett, P., Wingett, S.W., Varnai, C., Dimond, A., Plagnol, V., Zerbino, D., Schoenfelder, S., Javierre, B.M., Osborne, C., et al. (2016). CHiCAGO: robust detection of DNA looping interactions in Capture Hi-C data. Genome Biol 17, 127.[Link](https://doi.org/10.1186/s13059-016-0992-2)
+
+2. Mahara, S., Prussing, S., Smialkovska, V., Krall, S., Holliman, S., Blum, B., Dachtler, V., Borgers, H., Sollier, E., Plass, C., and Feldmann, A. (2024). Transient promoter interactions modulate developmental gene activation. Mol Cell 84, 4486-4502 e4487. [Link](https://doi.org/10.1016/j.molcel.2024.10.005)
+
+3. Wingett, S., Ewels, P., Furlan-Magaril, M., Nagano, T., Schoenfelder, S., Fraser, P., and Andrews, S. (2015). HiCUP: pipeline for mapping and processing Hi-C data. F1000Res 4, 1310. [Link](https://doi.org/10.12688/f1000research.7334.1)
