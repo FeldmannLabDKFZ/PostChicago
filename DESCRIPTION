@@ -1,0 +1,35 @@
+Package: PostChicago
+Type: Package
+Title: PostChicago - visualization and integration of Capture-(Hi)C data
+Version: 0.1.0
+Authors@R: c(
+    person(
+      "Angelika", "Feldmann",
+      email = "angelika.feldmann@dkfz-heidelberg.de",
+      role = c("aut", "cre")
+    ),
+	person(
+      "Samuel", "Krall",
+      email = "sammikrall@gmail.com",
+      role = c("aut")
+    ),
+	person(
+      "Belinda", "Blum",
+      email = "belinda.blum@dkfz.de",
+      role = c("aut")
+    )
+  )
+Description: PostCHiCAGO (stylized from here as PostChicago) is a toolbox for visualising and assessing the output from the CHiCAGO pipeline (SOURCE). 
+				The plots created by PostChicago show reads or CHiCAGO scores over different regions. 
+				PostChicago can integrate different experiments with other types of datasets and compare separate conditions. 
+biocViews: Software, GeneRegulation, Epigenetics, Visualization
+License: Artistic-2.0
+Encoding: UTF-8
+RoxygenNote: 7.3.2
+Imports: GenomicRanges, pheatmap, S4Vectors, IRanges, ggplot2, RColorBrewer, Chicago, utils, graphics, grDevices
+Suggests: knitr, rmarkdown, testthat (>= 3.0.0), data.table, BiocGenerics, codetools, BiocStyle
+Config/testthat/edition: 3
+VignetteBuilder: knitr
+NeedsCompilation: no
+Packaged: 2025-04-07 17:09:01 UTC; Samuel
+Depends: R (>= 4.4.0)
