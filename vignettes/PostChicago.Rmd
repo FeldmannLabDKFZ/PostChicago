@@ -238,7 +238,7 @@ Lineplots represent static snap shots. For a more flexible data browsing, PostCh
 # ##create bedgraphs for selected:
 # for (id in ids){
 #   print(id)
-#   getBedGraphsNormGetbednorm(id,L,rmapgr,baited_genes=baited_genes,outputDir = paste0(outputDir,'/bedgraphs'))    
+#   makeBedGraphs(id,L,rmapgr,baited_genes=baited_genes,outputDir = paste0(outputDir,'/bedgraphs'))    
 # }
 ```
 
