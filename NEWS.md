@@ -1,3 +1,7 @@
+# PostChicago 0.99.5
+
+* added citation to the new preprint describing the package
+
 # PostChicago 0.99.4
 
 ## Bug fixes
