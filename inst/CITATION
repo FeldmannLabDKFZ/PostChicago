@@ -1,0 +1,20 @@
+citHeader("To cite PostChicago in publications, please use:")
+
+bibentry(
+  bibtype = "Article",
+  title   = "Capture-(Hi)C analysis with PostChicago: Integrative metaprofiling and quantitative comparison of chromatin interactions",
+  author  = c(
+    person("Samuel", "Krall"),
+    person("Belinda", "Blum"),
+    person("Valeriia", "Smialkovska"),
+    person("Ezo", "Ozcan"),
+    person("Sarah-Victoria", "Dachtler"),
+    person("Gaia", "Oldfield"),
+    person("Angelika", "Feldmann")
+  ),
+  journal = "bioRxiv",
+  year    = "2026",
+  doi     = "10.64898/2026.10.08.757510",
+  url     = "https://doi.org/10.64898/2026.10.08.757510",
+  note    = "Preprint"
+)
