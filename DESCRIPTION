@@ -1,7 +1,7 @@
 Package: PostChicago
 Type: Package
 Title: PostChicago - visualization and integration of Capture-(Hi)C data
-Version: 1.0.0
+Version: 1.1.0
 Authors@R: c(
     person(
       "Angelika", "Feldmann",
